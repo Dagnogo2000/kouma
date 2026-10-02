@@ -140,7 +140,11 @@ export default function SignupPage() {
       }
     } catch (err: unknown) {
       if (err instanceof Error) {
-        setErrorMsg(err.message);
+        if (err.message.includes('Load failed') || err.message.includes('Failed to fetch')) {
+          setErrorMsg('Impossible de joindre Supabase. Veuillez vérifier votre connexion ou réessayer.');
+        } else {
+          setErrorMsg(err.message);
+        }
       } else {
         setErrorMsg('Une erreur inattendue est survenue.');
       }
