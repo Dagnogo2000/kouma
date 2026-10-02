@@ -38,7 +38,7 @@ export function ContactInfoDrawer({
   if (!isOpen) return null;
 
   return (
-    <aside className="w-[340px] sm:w-[380px] bg-white border-l border-[#e9edef] flex flex-col shrink-0 h-full overflow-y-auto animate-in slide-in-from-right duration-200 z-30">
+    <aside className="fixed inset-y-0 right-0 w-full sm:w-[380px] md:relative bg-white border-l border-[#e9edef] flex flex-col shrink-0 h-full overflow-y-auto animate-in slide-in-from-right duration-200 z-40 shadow-2xl md:shadow-none">
       {/* EN-TÊTE DU VOLET */}
       <div className="h-16 px-4 bg-[#f0f2f5] border-b border-[#e9edef] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">

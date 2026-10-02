@@ -54,6 +54,12 @@ const QUICK_DIOULA_EXPRESSIONS = [
   { dyu: 'Ne be na', fr: 'J\'arrive' },
 ];
 
+const COMMUNITY_CHAT: Profile = {
+  id: '__community__',
+  username: 'Kouma Communauté',
+  language: 'fr',
+};
+
 function getLocalUsers(): Profile[] {
   try {
     return JSON.parse(localStorage.getItem('kouma_all_users') || '[]');
@@ -151,35 +157,14 @@ export default function Home() {
   // Visionneuse de statuts
   const [viewingStatuses, setViewingStatuses] = useState<StoryStatus[] | null>(null);
   const [statusInitialIndex, setStatusInitialIndex] = useState(0);
-  const [statuses, setStatuses] = useState<StoryStatus[]>([
-    {
-      id: '1',
-      name: 'Famille DAGNOGO',
-      avatarLetter: 'F',
-      avatarColor: 'bg-emerald-500',
-      time: 'Il y a 25 minutes',
-      text: 'I ni baara ! Bon mois à tous 🌟 Que la paix soit sur nos familles.',
-      bgColor: 'from-emerald-600 to-teal-800'
-    },
-    {
-      id: '2',
-      name: 'Mon Ami D\'enfance',
-      avatarLetter: 'A',
-      avatarColor: 'bg-indigo-500',
-      time: 'Il y a 1 heure',
-      text: 'En route pour Abidjan 🚌 Bientôt au péage d\'Attinguié !',
-      bgColor: 'from-indigo-600 to-purple-800'
-    },
-    {
-      id: '3',
-      name: 'Kouma Info CI',
-      avatarLetter: 'K',
-      avatarColor: 'bg-amber-500',
-      time: 'Il y a 3 heures',
-      text: 'Anw be julakan kalan ! Apprenons le Dioula ensemble avec Kouma 🇨🇮',
-      bgColor: 'from-amber-500 to-orange-700'
-    },
-  ]);
+  const [statuses, setStatuses] = useState<StoryStatus[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      return JSON.parse(localStorage.getItem('kouma_user_statuses') || '[]');
+    } catch {
+      return [];
+    }
+  });
   const [newStatusText, setNewStatusText] = useState('');
   const [newStatusColor, setNewStatusColor] = useState('from-emerald-600 to-teal-800');
 
@@ -243,7 +228,7 @@ export default function Home() {
         .select('*')
         .order('created_at', { ascending: true });
 
-      if (targetUserId) {
+      if (targetUserId && targetUserId !== '__community__') {
         query = query.or(
           `and(sender_id.eq.${currentUserId},receiver_id.eq.${targetUserId}),and(sender_id.eq.${targetUserId},receiver_id.eq.${currentUserId})`
         );
@@ -316,7 +301,9 @@ export default function Home() {
           }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn('Profiles upsert:', error); });
 
           await loadAllContacts(currentUser.id);
-          await loadMessages(currentUser.id, null);
+          // Ne PAS charger de messages publics par défaut à la connexion
+          setMessages([]);
+          setSelectedUser(null);
         }
       } catch (err) {
         console.error('Erreur init:', err);
@@ -332,10 +319,15 @@ export default function Home() {
       setUser(currentUser);
       if (currentUser) {
         await loadAllContacts(currentUser.id);
-        await loadMessages(currentUser.id, selectedUser?.id ?? null);
+        if (selectedUser) {
+          await loadMessages(currentUser.id, selectedUser.id === '__community__' ? null : selectedUser.id);
+        } else {
+          setMessages([]);
+        }
       } else {
         setMessages([]);
         setAllContacts([]);
+        setSelectedUser(null);
       }
     });
 
@@ -353,9 +345,11 @@ export default function Home() {
       if (newMsg.receiver_id?.startsWith('__presence__')) return;
 
       const isForCurrentChat = selectedUser
-        ? (newMsg.sender_id === selectedUser.id && newMsg.receiver_id === user.id) ||
-          (newMsg.sender_id === user.id && newMsg.receiver_id === selectedUser.id)
-        : !newMsg.receiver_id;
+        ? (selectedUser.id === '__community__'
+            ? !newMsg.receiver_id
+            : (newMsg.sender_id === selectedUser.id && newMsg.receiver_id === user.id) ||
+              (newMsg.sender_id === user.id && newMsg.receiver_id === selectedUser.id))
+        : false;
 
       if (isForCurrentChat) {
         setMessages((prev) => {
@@ -444,7 +438,11 @@ export default function Home() {
     setSelectedUser(profile);
     setIsOtherTyping(false);
     setShowContactInfo(false);
-    if (user) loadMessages(user.id, profile?.id ?? null);
+    if (user && profile) {
+      loadMessages(user.id, profile.id === '__community__' ? null : profile.id);
+    } else {
+      setMessages([]);
+    }
   };
 
   // =================== ENVOI MESSAGE TEXTE ===================
@@ -472,9 +470,10 @@ export default function Home() {
       const encoded = encodeMessageContent({ originalText: rawText, translatedText, sourceLang: myLang, targetLang, type: 'text' });
       soundEffects.playSend();
 
+      const targetReceiverId = (selectedUser && selectedUser.id !== '__community__') ? selectedUser.id : null;
       const { data, error } = await supabase.from('messages').insert({
         sender_id: user.id,
-        receiver_id: selectedUser ? selectedUser.id : null,
+        receiver_id: targetReceiverId,
         content: encoded,
       }).select().single();
 
@@ -530,8 +529,9 @@ export default function Home() {
         const encoded = encodeMessageContent({ originalText: `🎤 Note vocale (${duration}s)`, type: 'audio', mediaUrl: b64, duration });
         soundEffects.playSend();
 
+        const targetReceiverId = (selectedUser && selectedUser.id !== '__community__') ? selectedUser.id : null;
         const { data, error } = await supabase.from('messages').insert({
-          sender_id: user.id, receiver_id: selectedUser ? selectedUser.id : null, content: encoded,
+          sender_id: user.id, receiver_id: targetReceiverId, content: encoded,
         }).select().single();
 
         if (!error && data) {
@@ -572,8 +572,9 @@ export default function Home() {
         fileSize,
       });
       soundEffects.playSend();
+      const targetReceiverId = (selectedUser && selectedUser.id !== '__community__') ? selectedUser.id : null;
       const { data, error } = await supabase.from('messages').insert({
-        sender_id: user.id, receiver_id: selectedUser ? selectedUser.id : null, content: encoded,
+        sender_id: user.id, receiver_id: targetReceiverId, content: encoded,
       }).select().single();
       if (!error && data) {
         setMessages((prev) => prev.some((m) => m.id === data.id) ? prev : [...prev, data]);
@@ -606,8 +607,9 @@ export default function Home() {
       });
       soundEffects.playSend();
 
+      const targetReceiverId = (selectedUser && selectedUser.id !== '__community__') ? selectedUser.id : null;
       const { data, error } = await supabase.from('messages').insert({
-        sender_id: user.id, receiver_id: selectedUser ? selectedUser.id : null, content: encoded,
+        sender_id: user.id, receiver_id: targetReceiverId, content: encoded,
       }).select().single();
 
       if (!error && data) {
@@ -713,7 +715,11 @@ export default function Home() {
       bgColor: newStatusColor,
       isMine: true
     };
-    setStatuses((prev) => [newEntry, ...prev]);
+    const updated = [newEntry, ...statuses];
+    setStatuses(updated);
+    try {
+      localStorage.setItem('kouma_user_statuses', JSON.stringify(updated));
+    } catch {}
     setNewStatusText('');
     setShowNewStatusModal(false);
   };
@@ -802,10 +808,12 @@ export default function Home() {
     );
   }
 
+  const unreadStatusesCount = statuses.filter((s) => !viewedStatusIds.includes(s.id)).length;
+
   const navItems = [
-    { id: 'chats', icon: <ChatIcon className="w-6 h-6" />, label: 'Discussions', badge: 2 },
+    { id: 'chats', icon: <ChatIcon className="w-6 h-6" />, label: 'Discussions' },
     { id: 'calls', icon: <CallsIcon className="w-6 h-6" />, label: 'Appels' },
-    { id: 'status', icon: <StatusIcon className="w-6 h-6" />, label: 'Statut', dot: true },
+    { id: 'status', icon: <StatusIcon className="w-6 h-6" />, label: 'Statut', dot: unreadStatusesCount > 0 },
     { id: 'communities', icon: <CommunitiesIcon className="w-6 h-6" />, label: 'Communautés' },
     { id: 'archived', icon: <ArchiveIcon className="w-6 h-6" />, label: 'Archivées', badge: archivedIds.length || undefined },
     { id: 'ai', icon: <MetaAiIcon className="w-6 h-6" />, label: 'Kouma AI' },
@@ -815,8 +823,8 @@ export default function Home() {
     <div className="h-screen w-screen bg-[#f0f2f5] flex items-center justify-center overflow-hidden font-sans">
       <div className="w-full h-full flex bg-white shadow-2xl overflow-hidden relative">
 
-        {/* ===== RAIL DE NAVIGATION GAUCHE ===== */}
-        <nav className="w-14 sm:w-16 bg-[#f0f2f5] border-r border-[#e9edef] flex flex-col justify-between items-center py-3 shrink-0 z-20">
+        {/* ===== RAIL DE NAVIGATION GAUCHE (DESKTOP) ===== */}
+        <nav className="hidden md:flex w-14 sm:w-16 bg-[#f0f2f5] border-r border-[#e9edef] flex-col justify-between items-center py-3 shrink-0 z-20">
           <div className="flex flex-col items-center gap-1 w-full">
             {navItems.map((item) => (
               <button
@@ -861,8 +869,45 @@ export default function Home() {
           </div>
         </nav>
 
-        {/* ===== VOLET GAUCHE ===== */}
-        <aside className="w-[360px] sm:w-[400px] bg-white border-r border-[#e9edef] flex flex-col shrink-0 z-10">
+        {/* ===== BARRE DE NAVIGATION INFÉRIEURE MOBILE (Quand aucun chat ouvert) ===== */}
+        {!selectedUser && (
+          <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-[#e9edef] flex items-center justify-around px-2 z-30 shadow-lg">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as typeof activeTab)}
+                className={`relative flex flex-col items-center justify-center p-1 transition-colors ${
+                  activeTab === item.id ? 'text-[#00a884]' : 'text-[#54656f]'
+                }`}
+              >
+                <div className="relative">
+                  {item.icon}
+                  {('badge' in item) && item.badge ? (
+                    <span className="absolute -top-1 -right-1 bg-[#25d366] text-white text-[9px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center">
+                      {item.badge}
+                    </span>
+                  ) : null}
+                  {('dot' in item) && item.dot && (
+                    <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#25d366]"></span>
+                  )}
+                </div>
+                <span className="text-[10px] font-medium mt-0.5">{item.label}</span>
+              </button>
+            ))}
+            <button
+              onClick={() => setShowSettings(true)}
+              className="flex flex-col items-center justify-center p-1 text-[#54656f]"
+            >
+              <div className={`w-6 h-6 rounded-full ${getAvatarColor(user.id)} text-white font-bold text-xs flex items-center justify-center shadow`}>
+                {(myUsername || 'U')[0].toUpperCase()}
+              </div>
+              <span className="text-[10px] font-medium mt-0.5">Moi</span>
+            </button>
+          </nav>
+        )}
+
+        {/* ===== VOLET GAUCHE (SIDEBAR) ===== */}
+        <aside className={`${selectedUser ? 'hidden md:flex' : 'flex'} w-full md:w-[360px] lg:w-[400px] bg-white border-r border-[#e9edef] flex-col shrink-0 z-10 h-full pb-16 md:pb-0`}>
 
           {/* DISCUSSIONS & ARCHIVÉES */}
           {(activeTab === 'chats' || activeTab === 'archived') && (
@@ -1027,9 +1072,9 @@ export default function Home() {
               {/* Liste des conversations */}
               <div className="flex-1 overflow-y-auto">
                 <div
-                  onClick={() => handleSelectUser(null)}
+                  onClick={() => handleSelectUser(COMMUNITY_CHAT)}
                   className={`px-3 py-2.5 flex items-center gap-3 cursor-pointer transition-colors border-b border-[#f0f2f5] ${
-                    selectedUser === null ? 'bg-[#f0f2f5]' : 'hover:bg-[#f5f6f6]'
+                    selectedUser?.id === '__community__' ? 'bg-[#f0f2f5]' : 'hover:bg-[#f5f6f6]'
                   }`}
                 >
                   <div className="w-12 h-12 rounded-full bg-[#00a884]/20 text-[#00a884] flex items-center justify-center text-lg font-bold shrink-0">
@@ -1042,7 +1087,6 @@ export default function Home() {
                     </div>
                     <div className="flex items-center justify-between mt-0.5">
                       <p className="text-xs text-[#667781] truncate">Canal général bilingue Dioula ⇋ Français</p>
-                      <span className="w-5 h-5 rounded-full bg-[#25d366] text-white text-[10px] font-bold flex items-center justify-center">1</span>
                     </div>
                   </div>
                 </div>
@@ -1140,35 +1184,46 @@ export default function Home() {
                   Mises à jour récentes ({statuses.length})
                 </div>
 
-                {statuses.map((st, idx) => {
-                  const isSeen = viewedStatusIds.includes(st.id);
-                  return (
-                    <div
-                      key={st.id}
-                      onClick={() => {
-                        setStatusInitialIndex(idx);
-                        setViewingStatuses(statuses);
-                        // Marquer tous les statuts visionnés à partir d'ici comme vus
-                        const newSeen = [...new Set([...viewedStatusIds, st.id])];
-                        setViewedStatusIds(newSeen);
-                        localStorage.setItem('kouma_viewed_statuses', JSON.stringify(newSeen));
-                      }}
-                      className="p-2.5 flex items-center gap-3 cursor-pointer hover:bg-[#f0f2f5] rounded-xl transition-all group"
-                    >
-                      <div className={`w-12 h-12 rounded-full ${
-                        isSeen
-                          ? 'ring-2 ring-[#d9d9d9] ring-offset-2'   /* Anneau gris : statut déjà vu */
-                          : 'ring-2 ring-[#00a884] ring-offset-2'    /* Anneau vert : statut non vu  */
-                      } ${st.avatarColor} text-white flex items-center justify-center font-bold text-base shrink-0 group-hover:scale-105 transition-transform`}>
-                        {st.avatarLetter.toUpperCase()}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h5 className={`text-sm font-semibold truncate ${ isSeen ? 'text-[#667781]' : 'text-[#111b21]' }`}>{st.name}</h5>
-                        <p className="text-xs text-[#667781] truncate">{st.time} {isSeen && <span className="text-[10px] text-[#8696a0] ml-1">• Vu</span>}</p>
-                      </div>
+                {statuses.length === 0 ? (
+                  <div className="py-10 px-4 text-center space-y-2">
+                    <div className="w-12 h-12 rounded-full bg-[#f0f2f5] text-[#8696a0] flex items-center justify-center mx-auto mb-2">
+                      <StatusIcon className="w-6 h-6" />
                     </div>
-                  );
-                })}
+                    <p className="text-sm font-semibold text-[#111b21]">Aucun statut récent</p>
+                    <p className="text-xs text-[#667781] max-w-xs mx-auto">
+                      Appuyez sur &quot;Mon statut&quot; pour partager une pensée ou une image avec vos contacts.
+                    </p>
+                  </div>
+                ) : (
+                  statuses.map((st, idx) => {
+                    const isSeen = viewedStatusIds.includes(st.id);
+                    return (
+                      <div
+                        key={st.id}
+                        onClick={() => {
+                          setStatusInitialIndex(idx);
+                          setViewingStatuses(statuses);
+                          const newSeen = [...new Set([...viewedStatusIds, st.id])];
+                          setViewedStatusIds(newSeen);
+                          localStorage.setItem('kouma_viewed_statuses', JSON.stringify(newSeen));
+                        }}
+                        className="p-2.5 flex items-center gap-3 cursor-pointer hover:bg-[#f0f2f5] rounded-xl transition-all group"
+                      >
+                        <div className={`w-12 h-12 rounded-full ${
+                          isSeen
+                            ? 'ring-2 ring-[#d9d9d9] ring-offset-2'
+                            : 'ring-2 ring-[#00a884] ring-offset-2'
+                        } ${st.avatarColor} text-white flex items-center justify-center font-bold text-base shrink-0 group-hover:scale-105 transition-transform`}>
+                          {st.avatarLetter.toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h5 className={`text-sm font-semibold truncate ${ isSeen ? 'text-[#667781]' : 'text-[#111b21]' }`}>{st.name}</h5>
+                          <p className="text-xs text-[#667781] truncate">{st.time} {isSeen && <span className="text-[10px] text-[#8696a0] ml-1">• Vu</span>}</p>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           )}
@@ -1226,7 +1281,7 @@ export default function Home() {
                   Rassemblez vos groupes d'apprentissage du Dioula, vos commerces et vos familles dans un même espace bilingue.
                 </p>
                 <button
-                  onClick={() => { handleSelectUser(null); setActiveTab('chats'); }}
+                  onClick={() => { handleSelectUser(COMMUNITY_CHAT); setActiveTab('chats'); }}
                   className="px-5 py-2.5 rounded-full bg-[#00a884] text-white text-xs font-bold shadow hover:bg-[#008f6f]"
                 >
                   Accéder au Canal Communauté
@@ -1268,72 +1323,86 @@ export default function Home() {
         </aside>
 
         {/* ===== ZONE DE CONVERSATION CENTRALE ===== */}
-        {selectedUser !== undefined && (selectedUser || messages.length > 0) ? (
-          <main className="flex-1 flex flex-col bg-[#efeae2] relative overflow-hidden">
+        {selectedUser !== null ? (
+          <main className="w-full md:flex-1 flex flex-col bg-[#efeae2] relative overflow-hidden h-full">
             {/* MOTIF DE FOND DOODLE AUTHENTIQUE WHATSAPP */}
             <WhatsAppDoodleBackground />
 
             {/* EN-TÊTE DE LA DISCUSSION */}
-            <header className="h-16 px-4 bg-[#f0f2f5] border-b border-[#e9edef] flex items-center justify-between shrink-0 z-10 shadow-sm">
-              <div
-                onClick={() => setShowContactInfo(!showContactInfo)}
-                className="flex items-center gap-3 cursor-pointer hover:opacity-90 select-none"
-              >
-                <div className={`w-10 h-10 rounded-full ${selectedUser ? getAvatarColor(selectedUser.id) : 'bg-[#00a884]/20'} text-white flex items-center justify-center font-bold shadow-sm`}>
-                  {selectedUser ? (selectedUser.username || 'U')[0].toUpperCase() : <CommunitiesIcon className="w-5 h-5 text-[#00a884]" />}
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold text-[#111b21] flex items-center gap-1.5">
-                    <span>{selectedUser ? selectedUser.username : 'Kouma Communauté'}</span>
-                    {selectedUser && mutedContactIds.includes(selectedUser.id) && (
-                      <span className="text-xs text-[#8696a0]" title="En sourdine">🔕</span>
-                    )}
-                  </h2>
-                  <p className="text-xs text-[#667781]">
-                    {isOtherTyping ? (
-                      <span className="text-[#00a884] animate-pulse font-medium">✍️ en train d'écrire...</span>
-                    ) : (
-                      <span className="flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#00a884] animate-pulse inline-block"></span>
-                        En ligne
-                      </span>
-                    )}
-                  </p>
+            <header className="h-16 px-3 sm:px-4 bg-[#f0f2f5] border-b border-[#e9edef] flex items-center justify-between shrink-0 z-10 shadow-sm">
+              <div className="flex items-center gap-1 sm:gap-2 min-w-0">
+                {/* Bouton Retour Mobile */}
+                <button
+                  onClick={() => { setSelectedUser(null); setMessages([]); }}
+                  className="md:hidden p-2 -ml-1 mr-1 rounded-full text-[#54656f] hover:bg-[#e9edef] transition-colors shrink-0"
+                  title="Retour aux discussions"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                    <line x1="19" y1="12" x2="5" y2="12" />
+                    <polyline points="12 19 5 12 12 5" />
+                  </svg>
+                </button>
+
+                <div
+                  onClick={() => setShowContactInfo(!showContactInfo)}
+                  className="flex items-center gap-2.5 sm:gap-3 cursor-pointer hover:opacity-90 select-none min-w-0"
+                >
+                  <div className={`w-10 h-10 rounded-full ${selectedUser.id !== '__community__' ? getAvatarColor(selectedUser.id) : 'bg-[#00a884]/20'} text-white flex items-center justify-center font-bold shadow-sm shrink-0`}>
+                    {selectedUser.id !== '__community__' ? (selectedUser.username || 'U')[0].toUpperCase() : <CommunitiesIcon className="w-5 h-5 text-[#00a884]" />}
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-bold text-[#111b21] flex items-center gap-1.5 truncate">
+                      <span className="truncate">{selectedUser.username}</span>
+                      {selectedUser.id !== '__community__' && mutedContactIds.includes(selectedUser.id) && (
+                        <span className="text-xs text-[#8696a0]" title="En sourdine">🔕</span>
+                      )}
+                    </h2>
+                    <p className="text-xs text-[#667781] truncate">
+                      {isOtherTyping ? (
+                        <span className="text-[#00a884] animate-pulse font-medium">✍️ en train d'écrire...</span>
+                      ) : (
+                        <span className="flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#00a884] animate-pulse inline-block"></span>
+                          En ligne
+                        </span>
+                      )}
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
                 <button
-                  onClick={() => setActiveCallModal({ name: selectedUser?.username || 'Contact', isVideo: false, duration: 0 })}
-                  className="w-9 h-9 rounded-full hover:bg-[#e9edef] flex items-center justify-center text-[#54656f] transition-colors"
+                  onClick={() => setActiveCallModal({ name: selectedUser.username, isVideo: false, duration: 0 })}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full hover:bg-[#e9edef] flex items-center justify-center text-[#54656f] transition-colors"
                   title="Appel audio"
                 >
                   <CallsIcon className="w-5 h-5" />
                 </button>
                 <button
-                  onClick={() => setActiveCallModal({ name: selectedUser?.username || 'Contact', isVideo: true, duration: 0 })}
-                  className="w-9 h-9 rounded-full hover:bg-[#e9edef] flex items-center justify-center text-[#54656f] transition-colors"
+                  onClick={() => setActiveCallModal({ name: selectedUser.username, isVideo: true, duration: 0 })}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-full hover:bg-[#e9edef] flex items-center justify-center text-[#54656f] transition-colors"
                   title="Appel vidéo"
                 >
                   <CameraIcon className="w-5 h-5" />
                 </button>
-                <div className="w-px h-5 bg-[#e9edef] mx-1"></div>
+                <div className="w-px h-5 bg-[#e9edef] mx-0.5 sm:mx-1"></div>
 
                 {/* Badge de traduction automatique Dioula / Français */}
                 <button
                   onClick={() => setAutoTranslate(!autoTranslate)}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm ${
+                  className={`px-2 sm:px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1 transition-all shadow-sm ${
                     autoTranslate ? 'bg-[#d9fdd3] text-[#008069] border border-[#00a884]/30' : 'bg-[#f0f2f5] text-[#667781]'
                   }`}
                   title="Activer/Désactiver la traduction automatique"
                 >
                   <span className="text-sm">{myLang === 'dyu' ? '🇨🇮' : '🇫🇷'}</span>
-                  <span>{autoTranslate ? 'Traduit' : 'Original'}</span>
+                  <span className="hidden sm:inline">{autoTranslate ? 'Traduit' : 'Original'}</span>
                 </button>
 
                 <button
                   onClick={() => setShowContactInfo(!showContactInfo)}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center text-[#54656f] hover:bg-[#e9edef] transition-colors ${
+                  className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center text-[#54656f] hover:bg-[#e9edef] transition-colors ${
                     showContactInfo ? 'bg-[#e9edef]' : ''
                   }`}
                   title="Informations du contact"
@@ -1655,8 +1724,8 @@ export default function Home() {
             </footer>
           </main>
         ) : (
-          /* ===== ÉTAT VIDE ===== */
-          <main className="flex-1 flex flex-col items-center justify-between bg-[#f0f2f5] p-8 relative">
+          /* ===== ÉTAT VIDE (Affiché sur desktop uniquement si aucun chat n'est ouvert) ===== */
+          <main className="hidden md:flex flex-1 flex-col items-center justify-between bg-[#f0f2f5] p-8 relative">
             <div />
             <div className="max-w-sm text-center space-y-8">
               <div className="flex items-center justify-center gap-10">
@@ -1773,7 +1842,7 @@ export default function Home() {
 
             <div className="max-h-80 overflow-y-auto">
               <div
-                onClick={() => { handleSelectUser(null); setShowNewChatModal(false); setActiveTab('chats'); }}
+                onClick={() => { handleSelectUser(COMMUNITY_CHAT); setShowNewChatModal(false); setActiveTab('chats'); }}
                 className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-[#f5f6f6] border-b border-[#f0f2f5]"
               >
                 <div className="w-11 h-11 rounded-full bg-[#00a884]/20 text-[#00a884] flex items-center justify-center font-bold">
