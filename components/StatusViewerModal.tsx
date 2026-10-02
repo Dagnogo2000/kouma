@@ -19,6 +19,7 @@ interface StatusViewerModalProps {
   initialIndex?: number;
   onClose: () => void;
   onReply?: (contactName: string, text: string) => void;
+  onStatusViewed?: (statusId: string) => void;
 }
 
 const DEFAULT_GRADIENTS = [
@@ -34,6 +35,7 @@ export function StatusViewerModal({
   initialIndex = 0,
   onClose,
   onReply,
+  onStatusViewed,
 }: StatusViewerModalProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [progress, setProgress] = useState(0);
@@ -72,11 +74,16 @@ export function StatusViewerModal({
     };
   }, [currentIndex, isPaused, statuses.length, onClose]);
 
-  // Réinitialiser la barre au changement de statut
+  // Réinitialiser la barre au changement de statut + marquer comme vu
   useEffect(() => {
     setProgress(0);
     setReactionSent(null);
-  }, [currentIndex]);
+    // Signaler le statut actuellement affiché comme vu
+    const status = statuses[currentIndex];
+    if (status && onStatusViewed) {
+      onStatusViewed(status.id);
+    }
+  }, [currentIndex, statuses, onStatusViewed]);
 
   // Clavier
   useEffect(() => {

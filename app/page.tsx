@@ -110,6 +110,13 @@ export default function Home() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showContactInfo, setShowContactInfo] = useState(false);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [showChatsMenu, setShowChatsMenu] = useState(false);
+  const chatsMenuRef = useRef<HTMLDivElement>(null);
+
+  // IDs des statuts déjà vus (anneau vert retiré)
+  const [viewedStatusIds, setViewedStatusIds] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('kouma_viewed_statuses') || '[]'); } catch { return []; }
+  });
 
   const [activeCallModal, setActiveCallModal] = useState<{ name: string; isVideo: boolean; duration: number } | null>(null);
   const [geminiApiKey, setGeminiApiKey] = useState('');
@@ -864,10 +871,103 @@ export default function Home() {
                 <h1 className="text-xl font-bold text-[#111b21]">
                   {activeTab === 'archived' ? 'Archivées' : 'Discussions'}
                 </h1>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setShowSettings(true)} className="w-9 h-9 rounded-full flex items-center justify-center text-[#54656f] hover:bg-[#f0f2f5]">
-                    <MoreVertIcon className="w-5 h-5" />
-                  </button>
+                <div className="flex items-center gap-1 relative" ref={chatsMenuRef}>
+
+                  {/* ===== MENU CONTEXTUEL ⋮ ===== */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowChatsMenu(!showChatsMenu)}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center text-[#54656f] hover:bg-[#f0f2f5] transition-colors ${
+                        showChatsMenu ? 'bg-[#f0f2f5]' : ''
+                      }`}
+                      title="Plus d'options"
+                    >
+                      <MoreVertIcon className="w-5 h-5" />
+                    </button>
+
+                    {showChatsMenu && (
+                      <>
+                        {/* Overlay transparent pour fermer au clic extérieur */}
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setShowChatsMenu(false)}
+                        />
+                        <div className="absolute top-10 right-0 z-50 bg-white rounded-2xl shadow-2xl border border-[#e9edef] w-60 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                          {/* Bouton + vert en haut */}
+                          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-[#f0f2f5] mb-1">
+                            <div className="w-9 h-9 rounded-full bg-[#00a884] text-white flex items-center justify-center shadow">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                                <line x1="12" y1="5" x2="12" y2="19" />
+                                <line x1="5" y1="12" x2="19" y2="12" />
+                              </svg>
+                            </div>
+                            <span className="text-sm font-bold text-[#111b21]">Nouvelle discussion</span>
+                          </div>
+
+                          {[
+                            {
+                              icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+                              label: 'Nouveau groupe',
+                              onClick: () => { setShowChatsMenu(false); alert('Groupes disponibles prochainement !'); }
+                            },
+                            {
+                              icon: <ArchiveIcon className="w-5 h-5" />,
+                              label: 'Archivées',
+                              onClick: () => { setShowChatsMenu(false); setActiveTab('archived'); }
+                            },
+                            {
+                              icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+                              label: 'Messages importants',
+                              onClick: () => { setShowChatsMenu(false); setFilterTab('favorites'); }
+                            },
+                            {
+                              icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
+                              label: 'Sélectionner les discussions',
+                              onClick: () => { setShowChatsMenu(false); }
+                            },
+                            {
+                              icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
+                              label: 'Tout marquer comme lu',
+                              onClick: () => { setShowChatsMenu(false); }
+                            },
+                          ].map((item) => (
+                            <button
+                              key={item.label}
+                              onClick={item.onClick}
+                              className="w-full flex items-center gap-3.5 px-5 py-3 text-sm text-[#111b21] hover:bg-[#f5f6f6] transition-colors text-left"
+                            >
+                              <span className="text-[#54656f]">{item.icon}</span>
+                              <span className="font-medium">{item.label}</span>
+                            </button>
+                          ))}
+
+                          <div className="border-t border-[#f0f2f5] mt-1 pt-1">
+                            <button
+                              onClick={() => { setShowChatsMenu(false); setShowSettings(true); }}
+                              className="w-full flex items-center gap-3.5 px-5 py-3 text-sm text-[#111b21] hover:bg-[#f5f6f6] transition-colors text-left"
+                            >
+                              <span className="text-[#54656f]"><LockIcon className="w-5 h-5" /></span>
+                              <span className="font-medium">Verrouillage de l'application</span>
+                            </button>
+                            <button
+                              onClick={() => { setShowChatsMenu(false); handleLogout(); }}
+                              className="w-full flex items-center gap-3.5 px-5 py-3 text-sm text-rose-500 hover:bg-rose-50 transition-colors text-left"
+                            >
+                              <span className="text-rose-400">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                                  <polyline points="16 17 21 12 16 7"/>
+                                  <line x1="21" y1="12" x2="9" y2="12"/>
+                                </svg>
+                              </span>
+                              <span className="font-semibold">Déconnexion</span>
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
                   <button
                     onClick={() => setShowNewChatModal(true)}
                     className="w-9 h-9 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md hover:scale-105 transition-all"
@@ -1040,24 +1140,35 @@ export default function Home() {
                   Mises à jour récentes ({statuses.length})
                 </div>
 
-                {statuses.map((st, idx) => (
-                  <div
-                    key={st.id}
-                    onClick={() => {
-                      setStatusInitialIndex(idx);
-                      setViewingStatuses(statuses);
-                    }}
-                    className="p-2.5 flex items-center gap-3 cursor-pointer hover:bg-[#f0f2f5] rounded-xl transition-all group"
-                  >
-                    <div className={`w-12 h-12 rounded-full ring-2 ring-[#00a884] ring-offset-2 ${st.avatarColor} text-white flex items-center justify-center font-bold text-base shrink-0 group-hover:scale-105 transition-transform`}>
-                      {st.avatarLetter.toUpperCase()}
+                {statuses.map((st, idx) => {
+                  const isSeen = viewedStatusIds.includes(st.id);
+                  return (
+                    <div
+                      key={st.id}
+                      onClick={() => {
+                        setStatusInitialIndex(idx);
+                        setViewingStatuses(statuses);
+                        // Marquer tous les statuts visionnés à partir d'ici comme vus
+                        const newSeen = [...new Set([...viewedStatusIds, st.id])];
+                        setViewedStatusIds(newSeen);
+                        localStorage.setItem('kouma_viewed_statuses', JSON.stringify(newSeen));
+                      }}
+                      className="p-2.5 flex items-center gap-3 cursor-pointer hover:bg-[#f0f2f5] rounded-xl transition-all group"
+                    >
+                      <div className={`w-12 h-12 rounded-full ${
+                        isSeen
+                          ? 'ring-2 ring-[#d9d9d9] ring-offset-2'   /* Anneau gris : statut déjà vu */
+                          : 'ring-2 ring-[#00a884] ring-offset-2'    /* Anneau vert : statut non vu  */
+                      } ${st.avatarColor} text-white flex items-center justify-center font-bold text-base shrink-0 group-hover:scale-105 transition-transform`}>
+                        {st.avatarLetter.toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h5 className={`text-sm font-semibold truncate ${ isSeen ? 'text-[#667781]' : 'text-[#111b21]' }`}>{st.name}</h5>
+                        <p className="text-xs text-[#667781] truncate">{st.time} {isSeen && <span className="text-[10px] text-[#8696a0] ml-1">• Vu</span>}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <h5 className="text-sm font-semibold text-[#111b21] truncate">{st.name}</h5>
-                      <p className="text-xs text-[#667781] truncate">{st.time}</p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1613,6 +1724,14 @@ export default function Home() {
           statuses={viewingStatuses}
           initialIndex={statusInitialIndex}
           onClose={() => setViewingStatuses(null)}
+          onStatusViewed={(statusId) => {
+            setViewedStatusIds((prev) => {
+              if (prev.includes(statusId)) return prev;
+              const updated = [...prev, statusId];
+              localStorage.setItem('kouma_viewed_statuses', JSON.stringify(updated));
+              return updated;
+            });
+          }}
           onReply={(contactName, reply) => {
             alert(`Réponse envoyée à ${contactName} : "${reply}"`);
           }}
