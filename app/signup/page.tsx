@@ -132,11 +132,11 @@ export default function SignupPage() {
       }
 
       if (data.session) {
-        router.push('/');
-        router.refresh();
+        // Session immediately available (email auto-confirmed)
+        router.replace('/');
       } else if (data.user) {
-        setSuccessMsg('Compte créé avec succès ! Vous pouvez maintenant vous connecter ou discuter avec ce compte.');
-        setLoading(false);
+        // Email confirmation required or no immediate session
+        router.replace('/login?registered=1');
       }
     } catch (err: unknown) {
       if (err instanceof Error) {

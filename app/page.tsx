@@ -96,6 +96,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [allContacts, setAllContacts] = useState<Profile[]>([]);
+  // IDs des utilisateurs avec qui on a réellement échangé des messages
+  const [conversationPartnerIds, setConversationPartnerIds] = useState<Set<string>>(new Set());
   const [selectedUser, setSelectedUser] = useState<Profile | null>(null);
   // Ref to track selectedUser without causing effect re-runs
   const selectedUserRef = useRef<Profile | null>(null);
@@ -273,6 +275,31 @@ export default function Home() {
     }
   }, []);
 
+  // =================== CHARGEMENT DES PARTENAIRES DE CONVERSATION ===================
+  const loadConversationPartners = useCallback(async (currentUserId: string) => {
+    try {
+      // Find all messages where I am sender or receiver (excluding community & presence)
+      const { data, error } = await supabase
+        .from('messages')
+        .select('sender_id, receiver_id')
+        .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+        .not('receiver_id', 'is', null);
+
+      if (error) { console.warn('Erreur partners:', error.message); return; }
+
+      const partnerIds = new Set<string>();
+      for (const msg of data || []) {
+        // Exclude presence messages
+        if (msg.receiver_id?.startsWith('__presence__')) continue;
+        if (msg.sender_id !== currentUserId) partnerIds.add(msg.sender_id);
+        if (msg.receiver_id && msg.receiver_id !== currentUserId) partnerIds.add(msg.receiver_id);
+      }
+      setConversationPartnerIds(partnerIds);
+    } catch (err) {
+      console.warn('Erreur loadConversationPartners:', err);
+    }
+  }, []);
+
   // =================== INITIALISATION SESSION ===================
   useEffect(() => {
     async function init() {
@@ -312,6 +339,7 @@ export default function Home() {
           }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn('Profiles upsert:', error); });
 
           await loadAllContacts(currentUser.id);
+          await loadConversationPartners(currentUser.id);
           // Ne PAS charger de messages par défaut à la connexion
           setMessages([]);
           selectedUserRef.current = null;
@@ -331,6 +359,7 @@ export default function Home() {
       setUser(currentUser);
       if (currentUser) {
         await loadAllContacts(currentUser.id);
+        await loadConversationPartners(currentUser.id);
         // Use ref to avoid stale closure
         const currentSelected = selectedUserRef.current;
         if (currentSelected) {
@@ -341,6 +370,7 @@ export default function Home() {
       } else {
         setMessages([]);
         setAllContacts([]);
+        setConversationPartnerIds(new Set());
         selectedUserRef.current = null;
         setSelectedUser(null);
       }
@@ -348,7 +378,7 @@ export default function Home() {
 
     return () => { authListener.subscription.unsubscribe(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadMessages, loadAllContacts]);
+  }, [loadMessages, loadAllContacts, loadConversationPartners]);
 
   // =================== TEMPS RÉEL ===================
   useEffect(() => {
@@ -360,11 +390,24 @@ export default function Home() {
     const handleIncoming = (newMsg: Message) => {
       if (newMsg.receiver_id?.startsWith('__presence__')) return;
 
-      const isForCurrentChat = selectedUser
-        ? (selectedUser.id === '__community__'
+      // If it's a private message for me, add sender to conversation partners
+      if (newMsg.receiver_id === user.id || newMsg.sender_id === user.id) {
+        const partnerId = newMsg.sender_id === user.id ? newMsg.receiver_id : newMsg.sender_id;
+        if (partnerId && !partnerId.startsWith('__')) {
+          setConversationPartnerIds((prev) => {
+            if (prev.has(partnerId)) return prev;
+            const next = new Set(prev);
+            next.add(partnerId);
+            return next;
+          });
+        }
+      }
+
+      const isForCurrentChat = selectedUserRef.current
+        ? (selectedUserRef.current.id === '__community__'
             ? !newMsg.receiver_id
-            : (newMsg.sender_id === selectedUser.id && newMsg.receiver_id === user.id) ||
-              (newMsg.sender_id === user.id && newMsg.receiver_id === selectedUser.id))
+            : (newMsg.sender_id === selectedUserRef.current.id && newMsg.receiver_id === user.id) ||
+              (newMsg.sender_id === user.id && newMsg.receiver_id === selectedUserRef.current.id))
         : false;
 
       if (isForCurrentChat) {
@@ -419,10 +462,14 @@ export default function Home() {
 
     const pollInterval = setInterval(async () => {
       if (user) {
-        await loadMessages(user.id, selectedUser?.id ?? null);
+        const curSelected = selectedUserRef.current;
+        if (curSelected) {
+          await loadMessages(user.id, curSelected.id === '__community__' ? null : curSelected.id);
+        }
         await loadAllContacts(user.id);
+        await loadConversationPartners(user.id);
       }
-    }, 4000);
+    }, 5000);
 
     return () => {
       channelRef.current = null;
@@ -756,16 +803,19 @@ export default function Home() {
     setUser(null);
   };
 
-  // Filtrage des contacts
-  const filteredContacts = allContacts.filter((p) => {
+  // Contacts de la sidebar = uniquement ceux avec qui on a eu une vraie conversation
+  const sidebarContacts = allContacts.filter((p) => {
+    const hasConversation = conversationPartnerIds.has(p.id);
     const matchesSearch = (p.username || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.email || '').toLowerCase().includes(searchQuery.toLowerCase());
     const isArchived = archivedIds.includes(p.id);
     if (activeTab === 'archived') return isArchived && matchesSearch;
     if (isArchived) return false;
-    if (filterTab === 'favorites') return favoriteIds.includes(p.id) && matchesSearch;
-    return matchesSearch;
+    if (filterTab === 'favorites') return favoriteIds.includes(p.id) && hasConversation && matchesSearch;
+    return hasConversation && matchesSearch;
   });
+  // Alias pour compatibilité (utilisé dans la liste sidebar)
+  const filteredContacts = sidebarContacts;
 
   const avatarColors = [
     'bg-rose-400', 'bg-sky-400', 'bg-violet-400', 'bg-amber-400',
@@ -1377,11 +1427,10 @@ export default function Home() {
                     <p className="text-xs text-[#667781] truncate">
                       {isOtherTyping ? (
                         <span className="text-[#00a884] animate-pulse font-medium">✍️ en train d'écrire...</span>
+                      ) : selectedUser.id === '__community__' ? (
+                        <span>Canal général bilingue</span>
                       ) : (
-                        <span className="flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#00a884] animate-pulse inline-block"></span>
-                          En ligne
-                        </span>
+                        <span>{selectedUser.language === 'dyu' ? '🇨🇮 Dioula' : '🇫🇷 Français'}</span>
                       )}
                     </p>
                   </div>

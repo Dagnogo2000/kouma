@@ -1,12 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const justRegistered = searchParams.get('registered') === '1';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -47,8 +49,7 @@ export default function LoginPage() {
       }
 
       if (data.session) {
-        router.push('/');
-        router.refresh();
+        router.replace('/');
       }
     } catch (err: unknown) {
       if (err instanceof Error) {
@@ -87,6 +88,13 @@ export default function LoginPage() {
             Messagerie instantanée bilingue Dioula ⇋ Français
           </p>
         </div>
+
+        {justRegistered && (
+          <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-start gap-2">
+            <span>✅</span>
+            <span>Compte créé avec succès ! Connectez-vous maintenant.</span>
+          </div>
+        )}
 
         {errorMsg && (
           <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-start gap-2">
