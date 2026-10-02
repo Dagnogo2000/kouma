@@ -98,6 +98,10 @@ export default function Home() {
   const [allContacts, setAllContacts] = useState<Profile[]>([]);
   // IDs des utilisateurs avec qui on a réellement échangé des messages
   const [conversationPartnerIds, setConversationPartnerIds] = useState<Set<string>>(new Set());
+  // Dernier message par conversation pour la sidebar
+  const [lastMessagesByContact, setLastMessagesByContact] = useState<Record<string, { text: string; time: string; isMine: boolean }>>({});
+  // Compteur de messages non lus par contact
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [selectedUser, setSelectedUser] = useState<Profile | null>(null);
   // Ref to track selectedUser without causing effect re-runs
   const selectedUserRef = useRef<Profile | null>(null);
@@ -247,7 +251,7 @@ export default function Home() {
   }, []);
 
   // =================== CHARGEMENT DES CONTACTS ===================
-  const loadAllContacts = useCallback(async (currentUserId: string) => {
+  const loadAllContacts = useCallback(async (currentUserId: string): Promise<Profile[]> => {
     try {
       const localUsers = getLocalUsers().filter((u) => u.id !== currentUserId);
       const { data: profilesData, error: pErr } = await supabase
@@ -269,36 +273,77 @@ export default function Home() {
         }
       }
 
-      setAllContacts(Array.from(merged.values()));
+      const list = Array.from(merged.values());
+      setAllContacts(list);
+      return list;
     } catch (err) {
       console.warn('Erreur loadAllContacts:', err);
+      return [];
     }
   }, []);
 
   // =================== CHARGEMENT DES PARTENAIRES DE CONVERSATION ===================
-  const loadConversationPartners = useCallback(async (currentUserId: string) => {
+  const loadConversationPartners = useCallback(async (currentUserId: string, contactsList?: Profile[]) => {
     try {
       // Find all messages where I am sender or receiver (excluding community & presence)
       const { data, error } = await supabase
         .from('messages')
-        .select('sender_id, receiver_id')
+        .select('*')
         .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
-        .not('receiver_id', 'is', null);
+        .not('receiver_id', 'is', null)
+        .order('created_at', { ascending: false });
 
       if (error) { console.warn('Erreur partners:', error.message); return; }
 
       const partnerIds = new Set<string>();
+      const lastMsgMap: Record<string, { text: string; time: string; isMine: boolean }> = {};
+
       for (const msg of data || []) {
-        // Exclude presence messages
         if (msg.receiver_id?.startsWith('__presence__')) continue;
-        if (msg.sender_id !== currentUserId) partnerIds.add(msg.sender_id);
-        if (msg.receiver_id && msg.receiver_id !== currentUserId) partnerIds.add(msg.receiver_id);
+        const partnerId = msg.sender_id === currentUserId ? msg.receiver_id : msg.sender_id;
+        if (!partnerId || partnerId.startsWith('__')) continue;
+
+        partnerIds.add(partnerId);
+
+        if (!lastMsgMap[partnerId]) {
+          let previewText = msg.content;
+          try {
+            const parsed = JSON.parse(msg.content);
+            if (parsed.type === 'audio') previewText = '🎤 Message vocal';
+            else if (parsed.type === 'image') previewText = '📷 Photo';
+            else if (parsed.type === 'file') previewText = '📄 Fichier';
+            else if (parsed.text) previewText = parsed.text;
+          } catch {}
+          const timeStr = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          lastMsgMap[partnerId] = {
+            text: previewText,
+            time: timeStr,
+            isMine: msg.sender_id === currentUserId,
+          };
+        }
       }
+
       setConversationPartnerIds(partnerIds);
+      setLastMessagesByContact((prev) => ({ ...prev, ...lastMsgMap }));
+
+      // Auto-ouvrir la discussion la plus récente sur desktop ou s'il y a un seul contact
+      if (!selectedUserRef.current && partnerIds.size > 0) {
+        const isDesktop = typeof window !== 'undefined' ? window.innerWidth >= 768 : true;
+        if (isDesktop || partnerIds.size === 1) {
+          const firstPartnerId = Array.from(partnerIds)[0];
+          const list = contactsList || allContacts;
+          const found = list.find((c) => c.id === firstPartnerId);
+          if (found) {
+            selectedUserRef.current = found;
+            setSelectedUser(found);
+            loadMessages(currentUserId, found.id);
+          }
+        }
+      }
     } catch (err) {
       console.warn('Erreur loadConversationPartners:', err);
     }
-  }, []);
+  }, [allContacts, loadMessages]);
 
   // =================== INITIALISATION SESSION ===================
   useEffect(() => {
@@ -338,12 +383,8 @@ export default function Home() {
             language: defaultLang,
           }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn('Profiles upsert:', error); });
 
-          await loadAllContacts(currentUser.id);
-          await loadConversationPartners(currentUser.id);
-          // Ne PAS charger de messages par défaut à la connexion
-          setMessages([]);
-          selectedUserRef.current = null;
-          setSelectedUser(null);
+          const contacts = await loadAllContacts(currentUser.id);
+          await loadConversationPartners(currentUser.id, contacts);
         }
       } catch (err) {
         console.error('Erreur init:', err);
@@ -358,14 +399,12 @@ export default function Home() {
       const currentUser = session?.user ?? null;
       setUser(currentUser);
       if (currentUser) {
-        await loadAllContacts(currentUser.id);
-        await loadConversationPartners(currentUser.id);
+        const contacts = await loadAllContacts(currentUser.id);
+        await loadConversationPartners(currentUser.id, contacts);
         // Use ref to avoid stale closure
         const currentSelected = selectedUserRef.current;
         if (currentSelected) {
           await loadMessages(currentUser.id, currentSelected.id === '__community__' ? null : currentSelected.id);
-        } else {
-          setMessages([]);
         }
       } else {
         setMessages([]);
@@ -390,7 +429,7 @@ export default function Home() {
     const handleIncoming = (newMsg: Message) => {
       if (newMsg.receiver_id?.startsWith('__presence__')) return;
 
-      // If it's a private message for me, add sender to conversation partners
+      // If it's a private message for me or from me, update partner list and preview
       if (newMsg.receiver_id === user.id || newMsg.sender_id === user.id) {
         const partnerId = newMsg.sender_id === user.id ? newMsg.receiver_id : newMsg.sender_id;
         if (partnerId && !partnerId.startsWith('__')) {
@@ -400,6 +439,33 @@ export default function Home() {
             next.add(partnerId);
             return next;
           });
+
+          let previewText = newMsg.content;
+          try {
+            const parsed = JSON.parse(newMsg.content);
+            if (parsed.type === 'audio') previewText = '🎤 Message vocal';
+            else if (parsed.type === 'image') previewText = '📷 Photo';
+            else if (parsed.type === 'file') previewText = '📄 Fichier';
+            else if (parsed.text) previewText = parsed.text;
+          } catch {}
+          const timeStr = new Date(newMsg.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+          setLastMessagesByContact((prev) => ({
+            ...prev,
+            [partnerId]: {
+              text: previewText,
+              time: timeStr,
+              isMine: newMsg.sender_id === user.id,
+            },
+          }));
+
+          // Si la discussion n'est pas ouverte, incrémenter le badge non-lu
+          if (selectedUserRef.current?.id !== partnerId && newMsg.sender_id !== user.id) {
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [partnerId]: (prev[partnerId] || 0) + 1,
+            }));
+          }
         }
       }
 
@@ -502,6 +568,13 @@ export default function Home() {
     setSelectedUser(profile);
     setIsOtherTyping(false);
     setShowContactInfo(false);
+    if (profile?.id) {
+      // Effacer les messages non lus pour ce contact
+      setUnreadCounts((prev) => ({ ...prev, [profile.id]: 0 }));
+      if (profile.id !== '__community__') {
+        setConversationPartnerIds((prev) => new Set(prev).add(profile.id));
+      }
+    }
     if (user && profile) {
       loadMessages(user.id, profile.id === '__community__' ? null : profile.id);
     } else {
@@ -544,6 +617,19 @@ export default function Home() {
       if (!error && data) {
         setMessages((prev) => prev.some((m) => m.id === data.id) ? prev : [...prev, data]);
         channelRef.current?.send({ type: 'broadcast', event: 'new_message', payload: data });
+
+        if (targetReceiverId) {
+          setConversationPartnerIds((prev) => new Set(prev).add(targetReceiverId));
+          const timeStr = new Date(data.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          setLastMessagesByContact((prev) => ({
+            ...prev,
+            [targetReceiverId]: {
+              text: rawText,
+              time: timeStr,
+              isMine: true,
+            },
+          }));
+        }
       }
     } catch (err) {
       console.error(err);
@@ -1163,6 +1249,9 @@ export default function Home() {
                   const isArch = archivedIds.includes(p.id);
                   const isMuted = mutedContactIds.includes(p.id);
 
+                  const lastMsg = lastMessagesByContact[p.id];
+                  const unread = unreadCounts[p.id] || 0;
+
                   return (
                     <div
                       key={p.id}
@@ -1180,22 +1269,37 @@ export default function Home() {
                             <span>{p.username}</span>
                             {isMuted && <span className="text-[10px] text-[#8696a0]" title="En sourdine">🔕</span>}
                           </h3>
-                          <span className="text-[11px] text-[#667781]">--:--</span>
+                          <span className={`text-[11px] ${unread > 0 ? 'text-[#00a884] font-bold' : 'text-[#667781]'}`}>
+                            {lastMsg ? lastMsg.time : ''}
+                          </span>
                         </div>
                         <div className="flex items-center justify-between mt-0.5">
-                          <p className="text-xs text-[#667781] truncate flex items-center gap-1">
-                            <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb] shrink-0" />
-                            <span>{p.language === 'dyu' ? 'Dioula 🇨🇮' : 'Français 🇫🇷'}</span>
+                          <p className={`text-xs truncate flex items-center gap-1 ${unread > 0 ? 'text-[#111b21] font-semibold' : 'text-[#667781]'}`}>
+                            {lastMsg ? (
+                              <>
+                                {lastMsg.isMine && <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb] shrink-0" />}
+                                <span className="truncate">{lastMsg.text}</span>
+                              </>
+                            ) : (
+                              <span>{p.language === 'dyu' ? 'Dioula 🇨🇮' : 'Français 🇫🇷'}</span>
+                            )}
                           </p>
-                          <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
-                            <button onClick={(e) => toggleFavorite(p.id, e)} title={isFav ? 'Retirer favoris' : 'Ajouter favoris'}
-                              className="w-5 h-5 flex items-center justify-center text-[#667781] hover:text-amber-500 text-xs">
-                              {isFav ? '★' : '☆'}
-                            </button>
-                            <button onClick={(e) => toggleArchive(p.id, e)} title={isArch ? 'Désarchiver' : 'Archiver'}
-                              className="w-5 h-5 flex items-center justify-center text-[#667781] hover:text-[#111b21]">
-                              <ArchiveIcon className="w-3.5 h-3.5" />
-                            </button>
+                          <div className="flex items-center gap-1.5">
+                            {unread > 0 && (
+                              <span className="min-w-5 h-5 px-1.5 rounded-full bg-[#00a884] text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                                {unread}
+                              </span>
+                            )}
+                            <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
+                              <button onClick={(e) => toggleFavorite(p.id, e)} title={isFav ? 'Retirer favoris' : 'Ajouter favoris'}
+                                className="w-5 h-5 flex items-center justify-center text-[#667781] hover:text-amber-500 text-xs">
+                                {isFav ? '★' : '☆'}
+                              </button>
+                              <button onClick={(e) => toggleArchive(p.id, e)} title={isArch ? 'Désarchiver' : 'Archiver'}
+                                className="w-5 h-5 flex items-center justify-center text-[#667781] hover:text-[#111b21]">
+                                <ArchiveIcon className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>

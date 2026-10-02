@@ -90,24 +90,7 @@ export default function SignupPage() {
           }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn(error); });
         }
 
-        // 2. Enregistrer la présence dans la table messages (visible par tous les clients)
-        if (data.user?.id) {
-          const presenceKey = `__presence__${data.user.id}`;
-          const encoded = JSON.stringify({
-            type: '__presence__',
-            id: data.user.id,
-            email: email.trim(),
-            username: newUserName,
-            language: preferredLang,
-          });
-          await supabase.from('messages').insert({
-            sender_id: data.user.id,
-            receiver_id: presenceKey,
-            content: encoded,
-          }).then(({ error }) => { if (error) console.warn(error); });
-        }
-
-        // 3. Broadcaster la présence en temps réel via le canal Supabase
+        // 2. Broadcaster la présence en temps réel via le canal Supabase
         if (data.user?.id) {
           const presenceChannel = supabase.channel('kouma_main');
           presenceChannel.subscribe((status) => {

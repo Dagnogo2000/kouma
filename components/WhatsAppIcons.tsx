@@ -145,7 +145,7 @@ export function DoubleCheckIcon({ className = 'w-5 h-5' }: IconProps) {
   return (
     <svg viewBox="0 0 18 18" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
       <path d="M17.394 5.124l-.748-.748-8.36 8.36-3.742-3.613-.722.748 4.464 4.31 9.108-9.057z" fill="currentColor"/>
-      <path d="M1.394 9.124l-.748.748 4.464 4.31.722-.748-4.438-4.31z" fill="currentColor" opacity="0.5"/>
+      <path d="M1.394 9.124l-.748.748 4.464 4.31.722-.748-4.438-4.31z" fill="currentColor"/>
     </svg>
   );
 }
