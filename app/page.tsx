@@ -97,6 +97,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [allContacts, setAllContacts] = useState<Profile[]>([]);
   const [selectedUser, setSelectedUser] = useState<Profile | null>(null);
+  // Ref to track selectedUser without causing effect re-runs
+  const selectedUserRef = useRef<Profile | null>(null);
 
   const [activeTab, setActiveTab] = useState<'chats' | 'calls' | 'status' | 'communities' | 'archived' | 'ai'>('chats');
   const [filterTab, setFilterTab] = useState<'all' | 'unread' | 'favorites' | 'groups'>('all');
@@ -281,28 +283,38 @@ export default function Home() {
 
         if (currentUser) {
           const savedLang = localStorage.getItem('kouma_lang') as 'fr' | 'dyu' | null || 'fr';
-          const defaultName = currentUser.email?.split('@')[0] || 'Utilisateur';
+          // Try to load username from profile first
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('username, language')
+            .eq('id', currentUser.id)
+            .single();
+
+          const defaultName = profileData?.username || currentUser.email?.split('@')[0] || 'Utilisateur';
+          const defaultLang = (profileData?.language as 'fr' | 'dyu') || savedLang || 'fr';
           setMyUsername(defaultName);
+          setMyLang(defaultLang);
 
           saveLocalUser({
             id: currentUser.id,
             username: defaultName,
             email: currentUser.email,
-            language: savedLang,
+            language: defaultLang,
           });
 
-          broadcastMyPresence(currentUser, defaultName, savedLang).catch(console.warn);
+          broadcastMyPresence(currentUser, defaultName, defaultLang).catch(console.warn);
 
           supabase.from('profiles').upsert({
             id: currentUser.id,
             username: defaultName,
             email: currentUser.email,
-            language: savedLang,
+            language: defaultLang,
           }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn('Profiles upsert:', error); });
 
           await loadAllContacts(currentUser.id);
-          // Ne PAS charger de messages publics par défaut à la connexion
+          // Ne PAS charger de messages par défaut à la connexion
           setMessages([]);
+          selectedUserRef.current = null;
           setSelectedUser(null);
         }
       } catch (err) {
@@ -319,20 +331,24 @@ export default function Home() {
       setUser(currentUser);
       if (currentUser) {
         await loadAllContacts(currentUser.id);
-        if (selectedUser) {
-          await loadMessages(currentUser.id, selectedUser.id === '__community__' ? null : selectedUser.id);
+        // Use ref to avoid stale closure
+        const currentSelected = selectedUserRef.current;
+        if (currentSelected) {
+          await loadMessages(currentUser.id, currentSelected.id === '__community__' ? null : currentSelected.id);
         } else {
           setMessages([]);
         }
       } else {
         setMessages([]);
         setAllContacts([]);
+        selectedUserRef.current = null;
         setSelectedUser(null);
       }
     });
 
     return () => { authListener.subscription.unsubscribe(); };
-  }, [loadMessages, loadAllContacts, selectedUser]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadMessages, loadAllContacts]);
 
   // =================== TEMPS RÉEL ===================
   useEffect(() => {
@@ -435,6 +451,7 @@ export default function Home() {
   };
 
   const handleSelectUser = (profile: Profile | null) => {
+    selectedUserRef.current = profile;
     setSelectedUser(profile);
     setIsOtherTyping(false);
     setShowContactInfo(false);

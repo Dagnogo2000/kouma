@@ -17,6 +17,14 @@ export const metadata: Metadata = {
   description: "Application de messagerie instantanée en temps réel propulsée par Supabase et Next.js",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
