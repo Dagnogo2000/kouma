@@ -552,7 +552,7 @@ export default function Home() {
       })
       .on('broadcast', { event: 'new_message' }, ({ payload }) => handleIncoming(payload as Message))
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
-        if (payload.sender_id === selectedUser?.id) {
+        if (payload.sender_id === selectedUserRef.current?.id) {
           setIsOtherTyping(true);
           if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
           typingTimeoutRef.current = setTimeout(() => setIsOtherTyping(false), 3000);
@@ -588,6 +588,19 @@ export default function Home() {
         }
       });
 
+    // Heartbeat présence toutes les 15s pour maintenir le statut en ligne actif
+    const presenceHeartbeat = setInterval(async () => {
+      if (channelRef.current && user) {
+        try {
+          await channelRef.current.track({
+            userId: user.id,
+            username: myUsername || user.email?.split('@')[0],
+            online_at: new Date().toISOString(),
+          });
+        } catch {}
+      }
+    }, 15000);
+
     const handleBeforeUnload = () => {
       try {
         channel.untrack();
@@ -609,13 +622,15 @@ export default function Home() {
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      clearInterval(presenceHeartbeat);
       try { channel.untrack(); } catch {}
       channelRef.current = null;
       supabase.removeChannel(channel);
       clearInterval(pollInterval);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
-  }, [user, selectedUser, loadMessages, loadAllContacts, myLang, myUsername]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, loadMessages, loadAllContacts, loadConversationPartners, myLang, myUsername]);
 
   useEffect(() => {
     if (showNewChatModal && user) {
@@ -1632,8 +1647,10 @@ export default function Home() {
                         </span>
                       ) : lastSeenByUser[selectedUser.id] ? (
                         <span>vu {formatLastSeen(lastSeenByUser[selectedUser.id])}</span>
+                      ) : lastMessagesByContact[selectedUser.id]?.time ? (
+                        <span>vu aujourd'hui à {lastMessagesByContact[selectedUser.id].time}</span>
                       ) : (
-                        <span>{selectedUser.language === 'dyu' ? 'Dioula 🇨🇮' : 'Français 🇫🇷'}</span>
+                        <span>hors ligne</span>
                       )}
                     </p>
                   </div>
