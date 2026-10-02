@@ -8,7 +8,7 @@ import { soundEffects } from '@/lib/sounds';
 import {
   ChatIcon, CallsIcon, StatusIcon, CommunitiesIcon, ArchiveIcon,
   MetaAiIcon, DocumentIcon, AddContactIcon, LockIcon, MoreVertIcon,
-  MicIcon, CameraIcon, AttachIcon, SendIcon, DoubleCheckIcon, EmojiIcon
+  MicIcon, CameraIcon, AttachIcon, SendIcon, DoubleCheckIcon, SingleCheckIcon, EmojiIcon
 } from '@/components/WhatsAppIcons';
 import { VoiceWaveform } from '@/components/VoiceWaveform';
 import { StatusViewerModal, type StoryStatus } from '@/components/StatusViewerModal';
@@ -31,6 +31,7 @@ interface Profile {
   username: string;
   email?: string;
   language?: 'fr' | 'dyu';
+  last_seen?: string;
 }
 
 interface CallLog {
@@ -78,6 +79,24 @@ function saveLocalUser(user: Profile) {
   }
 }
 
+function formatLastSeen(isoDate: string): string {
+  try {
+    const d = new Date(isoDate);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    if (diffMs < 60000) return "à l'instant";
+    const isToday = d.toDateString() === now.toDateString();
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return `aujourd'hui à ${timeStr}`;
+    const yesterday = new Date(now.getTime() - 86400000);
+    if (d.toDateString() === yesterday.toDateString()) return `hier à ${timeStr}`;
+    return `le ${d.toLocaleDateString([], { day: '2-digit', month: '2-digit' })} à ${timeStr}`;
+  } catch {
+    return 'récemment';
+  }
+}
+
 async function broadcastMyPresence(currentUser: User, username: string, lang: string) {
   try {
     await supabase.from('profiles').upsert({
@@ -102,6 +121,10 @@ export default function Home() {
   const [lastMessagesByContact, setLastMessagesByContact] = useState<Record<string, { text: string; time: string; isMine: boolean }>>({});
   // Compteur de messages non lus par contact
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  // Utilisateurs en ligne en temps réel
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
+  // Date de dernière déconnexion par utilisateur
+  const [lastSeenByUser, setLastSeenByUser] = useState<Record<string, string>>({});
   const [selectedUser, setSelectedUser] = useState<Profile | null>(null);
   // Ref to track selectedUser without causing effect re-runs
   const selectedUserRef = useRef<Profile | null>(null);
@@ -269,7 +292,11 @@ export default function Home() {
             username: u.username || u.email?.split('@')[0] || 'Utilisateur',
             email: u.email,
             language: u.language,
+            last_seen: u.last_seen,
           });
+          if (u.last_seen) {
+            setLastSeenByUser((prev) => ({ ...prev, [u.id]: u.last_seen }));
+          }
         }
       }
 
@@ -419,12 +446,42 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadMessages, loadAllContacts, loadConversationPartners]);
 
-  // =================== TEMPS RÉEL ===================
+  // =================== TEMPS RÉEL & PRÉSENCE EN LIGNE ===================
   useEffect(() => {
     if (!user) return;
 
-    const channel = supabase.channel('kouma_main', { config: { broadcast: { self: false } } });
+    const channel = supabase.channel('kouma_main', {
+      config: {
+        broadcast: { self: false },
+        presence: { key: user.id },
+      },
+    });
     channelRef.current = channel;
+
+    // Suivi de la présence en direct (En ligne / Vu à)
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const activeIds = new Set<string>();
+        for (const [key, presences] of Object.entries(state)) {
+          if (presences && presences.length > 0) {
+            activeIds.add(key);
+          }
+        }
+        setOnlineUserIds(activeIds);
+      })
+      .on('presence', { event: 'join' }, ({ key }) => {
+        setOnlineUserIds((prev) => new Set(prev).add(key));
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        setOnlineUserIds((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        const nowIso = new Date().toISOString();
+        setLastSeenByUser((prev) => ({ ...prev, [key]: nowIso }));
+      });
 
     const handleIncoming = (newMsg: Message) => {
       if (newMsg.receiver_id?.startsWith('__presence__')) return;
@@ -511,8 +568,13 @@ export default function Home() {
           });
         }
       })
-      .subscribe((status) => {
+      .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
+          await channel.track({
+            userId: user.id,
+            username: myUsername || user.email?.split('@')[0],
+            online_at: new Date().toISOString(),
+          });
           channel.send({
             type: 'broadcast',
             event: 'user_joined',
@@ -526,6 +588,14 @@ export default function Home() {
         }
       });
 
+    const handleBeforeUnload = () => {
+      try {
+        channel.untrack();
+        supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id).then(() => {});
+      } catch {}
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     const pollInterval = setInterval(async () => {
       if (user) {
         const curSelected = selectedUserRef.current;
@@ -538,6 +608,8 @@ export default function Home() {
     }, 5000);
 
     return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      try { channel.untrack(); } catch {}
       channelRef.current = null;
       supabase.removeChannel(channel);
       clearInterval(pollInterval);
@@ -885,6 +957,10 @@ export default function Home() {
   };
 
   const handleLogout = async () => {
+    try {
+      await channelRef.current?.untrack();
+      await supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user?.id);
+    } catch {}
     await supabase.auth.signOut();
     setUser(null);
   };
@@ -1260,8 +1336,13 @@ export default function Home() {
                         selectedUser?.id === p.id ? 'bg-[#f0f2f5]' : 'hover:bg-[#f5f6f6]'
                       }`}
                     >
-                      <div className={`w-12 h-12 rounded-full ${getAvatarColor(p.id)} text-white flex items-center justify-center text-base font-bold shrink-0 shadow-sm`}>
-                        {(p.username || 'U')[0].toUpperCase()}
+                      <div className="relative shrink-0">
+                        <div className={`w-12 h-12 rounded-full ${getAvatarColor(p.id)} text-white flex items-center justify-center text-base font-bold shadow-sm`}>
+                          {(p.username || 'U')[0].toUpperCase()}
+                        </div>
+                        {onlineUserIds.has(p.id) && (
+                          <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-[#00a884] border-2 border-white rounded-full" title="En ligne"></span>
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
@@ -1277,7 +1358,13 @@ export default function Home() {
                           <p className={`text-xs truncate flex items-center gap-1 ${unread > 0 ? 'text-[#111b21] font-semibold' : 'text-[#667781]'}`}>
                             {lastMsg ? (
                               <>
-                                {lastMsg.isMine && <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb] shrink-0" />}
+                                {lastMsg.isMine && (
+                                  onlineUserIds.has(p.id) ? (
+                                    <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb] shrink-0" />
+                                  ) : (
+                                    <SingleCheckIcon className="w-3.5 h-3.5 text-[#8696a0] shrink-0" />
+                                  )
+                                )}
                                 <span className="truncate">{lastMsg.text}</span>
                               </>
                             ) : (
@@ -1518,8 +1605,13 @@ export default function Home() {
                   onClick={() => setShowContactInfo(!showContactInfo)}
                   className="flex items-center gap-2.5 sm:gap-3 cursor-pointer hover:opacity-90 select-none min-w-0"
                 >
-                  <div className={`w-10 h-10 rounded-full ${selectedUser.id !== '__community__' ? getAvatarColor(selectedUser.id) : 'bg-[#00a884]/20'} text-white flex items-center justify-center font-bold shadow-sm shrink-0`}>
-                    {selectedUser.id !== '__community__' ? (selectedUser.username || 'U')[0].toUpperCase() : <CommunitiesIcon className="w-5 h-5 text-[#00a884]" />}
+                  <div className="relative shrink-0">
+                    <div className={`w-10 h-10 rounded-full ${selectedUser.id !== '__community__' ? getAvatarColor(selectedUser.id) : 'bg-[#00a884]/20'} text-white flex items-center justify-center font-bold shadow-sm`}>
+                      {selectedUser.id !== '__community__' ? (selectedUser.username || 'U')[0].toUpperCase() : <CommunitiesIcon className="w-5 h-5 text-[#00a884]" />}
+                    </div>
+                    {selectedUser.id !== '__community__' && onlineUserIds.has(selectedUser.id) && (
+                      <span className="absolute bottom-0 right-0 w-3 h-3 bg-[#00a884] border-2 border-white rounded-full"></span>
+                    )}
                   </div>
                   <div className="min-w-0">
                     <h2 className="text-sm font-bold text-[#111b21] flex items-center gap-1.5 truncate">
@@ -1533,8 +1625,15 @@ export default function Home() {
                         <span className="text-[#00a884] animate-pulse font-medium">✍️ en train d'écrire...</span>
                       ) : selectedUser.id === '__community__' ? (
                         <span>Canal général bilingue</span>
+                      ) : onlineUserIds.has(selectedUser.id) ? (
+                        <span className="text-[#00a884] font-medium flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-[#00a884] animate-pulse inline-block"></span>
+                          en ligne
+                        </span>
+                      ) : lastSeenByUser[selectedUser.id] ? (
+                        <span>vu {formatLastSeen(lastSeenByUser[selectedUser.id])}</span>
                       ) : (
-                        <span>{selectedUser.language === 'dyu' ? '🇨🇮 Dioula' : '🇫🇷 Français'}</span>
+                        <span>{selectedUser.language === 'dyu' ? 'Dioula 🇨🇮' : 'Français 🇫🇷'}</span>
                       )}
                     </p>
                   </div>
@@ -1728,10 +1827,16 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* HEURE ET DOUBLE COCHE BLEUE */}
+                      {/* HEURE ET COCHES (2 traits si destinataire en ligne, 1 trait sinon) */}
                       <div className="flex items-center justify-end gap-1 text-[10px] text-[#667781] mt-0.5">
                         <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                        {isMine && <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb]" />}
+                        {isMine && (
+                          (msg.receiver_id && onlineUserIds.has(msg.receiver_id)) || selectedUser?.id === '__community__' ? (
+                            <DoubleCheckIcon className="w-3.5 h-3.5 text-[#53bdeb]" title="Distribué (en ligne)" />
+                          ) : (
+                            <SingleCheckIcon className="w-3.5 h-3.5 text-[#8696a0]" title="Envoyé (hors ligne)" />
+                          )
+                        )}
                       </div>
 
                       {/* BADGE DES RÉACTIONS WHATSAPP */}
